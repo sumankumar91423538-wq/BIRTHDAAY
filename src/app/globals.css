@@ -1,0 +1,184 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-blush: #FFF3F8;
+  --color-lavender: #F1E9FF;
+  --color-pink-primary: #FF9BC0;
+  --color-pink-deep: #FF6FA5;
+  --color-lavender-soft: #D9C6FF;
+  --color-gold-glow: #FFE3A3;
+  --color-plum: #5B3A5D;
+  --color-galaxy-dark: #1A1030;
+
+  --font-poppins: var(--font-poppins-var, 'Poppins', sans-serif);
+}
+
+/* Custom keyframes for animations that can't be done purely with framer-motion */
+@keyframes breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.02); }
+}
+
+@keyframes glow-pulse {
+  0%, 100% {
+    box-shadow: 0 0 8px rgba(255, 155, 192, 0.3), 0 0 20px rgba(255, 155, 192, 0.1);
+  }
+  50% {
+    box-shadow: 0 0 16px rgba(255, 155, 192, 0.5), 0 0 40px rgba(255, 155, 192, 0.2);
+  }
+}
+
+@keyframes button-breathe-glow {
+  0%, 100% {
+    box-shadow: 0 0 20px rgba(255, 111, 165, 0.3), 0 0 40px rgba(255, 111, 165, 0.1);
+  }
+  50% {
+    box-shadow: 0 0 30px rgba(255, 111, 165, 0.5), 0 0 60px rgba(255, 111, 165, 0.25);
+  }
+}
+
+@keyframes float-particle {
+  0% { transform: translateY(0px) translateX(0px); opacity: 0; }
+  10% { opacity: 1; }
+  90% { opacity: 1; }
+  100% { transform: translateY(-100vh) translateX(20px); opacity: 0; }
+}
+
+@keyframes sine-float {
+  0% { transform: translateX(0); }
+  25% { transform: translateX(15px); }
+  50% { transform: translateX(0); }
+  75% { transform: translateX(-15px); }
+  100% { transform: translateX(0); }
+}
+
+/* ── Cinematic Entry Screen Keyframes ── */
+
+@keyframes entry-bg-zoom {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.06); }
+}
+
+@keyframes float-heart {
+  0% {
+    transform: translateY(0) translateX(0) rotate(0deg) scale(1);
+    opacity: 0;
+  }
+  10% { opacity: 0.8; }
+  50% {
+    transform: translateY(-35vh) translateX(15px) rotate(15deg) scale(1.1);
+    opacity: 0.6;
+  }
+  90% { opacity: 0.2; }
+  100% {
+    transform: translateY(-70vh) translateX(-10px) rotate(-10deg) scale(0.8);
+    opacity: 0;
+  }
+}
+
+@keyframes float-balloon {
+  0% {
+    transform: translateY(0) rotate(0deg);
+    opacity: 0;
+  }
+  8% { opacity: 0.7; }
+  50% {
+    transform: translateY(-40vh) rotate(8deg);
+  }
+  90% { opacity: 0.3; }
+  100% {
+    transform: translateY(-80vh) rotate(-5deg);
+    opacity: 0;
+  }
+}
+
+@keyframes sparkle-twinkle {
+  0%, 100% {
+    transform: scale(0) rotate(0deg);
+    opacity: 0;
+  }
+  50% {
+    transform: scale(1) rotate(180deg);
+    opacity: 1;
+  }
+}
+
+@keyframes tiny-star-pulse {
+  0%, 100% {
+    transform: scale(0.6);
+    opacity: 0.3;
+  }
+  50% {
+    transform: scale(1.2);
+    opacity: 0.9;
+  }
+}
+
+@keyframes glow-orb-drift {
+  0%, 100% {
+    transform: translate(0, 0) scale(1);
+    opacity: 0.4;
+  }
+  33% {
+    transform: translate(20px, -15px) scale(1.15);
+    opacity: 0.6;
+  }
+  66% {
+    transform: translate(-15px, 10px) scale(0.9);
+    opacity: 0.35;
+  }
+}
+
+@keyframes shimmer-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+@keyframes button-glow-pulse {
+  0%, 100% {
+    box-shadow:
+      0 0 20px rgba(255, 155, 192, 0.3),
+      0 0 40px rgba(217, 198, 255, 0.15);
+  }
+  50% {
+    box-shadow:
+      0 0 30px rgba(255, 155, 192, 0.5),
+      0 0 60px rgba(217, 198, 255, 0.3),
+      0 0 80px rgba(255, 155, 192, 0.15);
+  }
+}
+
+@keyframes exit-sparkle-burst {
+  0% {
+    transform: translate(0, 0) scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(var(--burst-x, 50px), var(--burst-y, -50px)) scale(0);
+    opacity: 0;
+  }
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  overflow-x: hidden;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #FFF3F8;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #FF9BC0;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #FF6FA5;
+}
