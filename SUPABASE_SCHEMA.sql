@@ -44,6 +44,7 @@ on conflict (session_name) do nothing;
 -- ═══════════════════════════════════════════════════════
 -- RPC: set_cake_ready(input_role text)
 -- Atomic server-side cake ready update with 10s window
+-- Uses #variable_conflict use_column to avoid ambiguity
 -- ═══════════════════════════════════════════════════════
 
 CREATE OR REPLACE FUNCTION public.set_cake_ready(input_role text)
@@ -51,6 +52,7 @@ RETURNS json
 LANGUAGE plpgsql
 SECURITY DEFINER
 AS $$
+#variable_conflict use_column
 DECLARE
   result json;
   v_boy_ready boolean;
@@ -61,10 +63,10 @@ DECLARE
   v_now timestamptz := now();
 BEGIN
   -- Lock the row for update to prevent race conditions
-  SELECT boy_ready, girl_ready, boy_clicked_at, girl_clicked_at, cake_cut
+  SELECT cs.boy_ready, cs.girl_ready, cs.boy_clicked_at, cs.girl_clicked_at, cs.cake_cut
   INTO v_boy_ready, v_girl_ready, v_boy_clicked_at, v_girl_clicked_at, v_cake_cut
-  FROM public.cake_session
-  WHERE session_name = 'main_birthday_cake'
+  FROM public.cake_session cs
+  WHERE cs.session_name = 'main_birthday_cake'
   FOR UPDATE;
 
   -- If no row found, create it
@@ -72,18 +74,18 @@ BEGIN
     INSERT INTO public.cake_session (session_name, boy_ready, girl_ready, cake_cut, updated_at)
     VALUES ('main_birthday_cake', false, false, false, v_now);
 
-    SELECT boy_ready, girl_ready, boy_clicked_at, girl_clicked_at, cake_cut
+    SELECT cs.boy_ready, cs.girl_ready, cs.boy_clicked_at, cs.girl_clicked_at, cs.cake_cut
     INTO v_boy_ready, v_girl_ready, v_boy_clicked_at, v_girl_clicked_at, v_cake_cut
-    FROM public.cake_session
-    WHERE session_name = 'main_birthday_cake'
+    FROM public.cake_session cs
+    WHERE cs.session_name = 'main_birthday_cake'
     FOR UPDATE;
   END IF;
 
   -- If already cut, return current state
   IF v_cake_cut THEN
     SELECT row_to_json(t) INTO result
-    FROM (SELECT boy_ready, girl_ready, cake_cut, boy_clicked_at, girl_clicked_at, cut_at, updated_at
-          FROM public.cake_session WHERE session_name = 'main_birthday_cake') t;
+    FROM (SELECT cs.boy_ready, cs.girl_ready, cs.cake_cut, cs.boy_clicked_at, cs.girl_clicked_at, cs.cut_at, cs.updated_at
+          FROM public.cake_session cs WHERE cs.session_name = 'main_birthday_cake') t;
     RETURN result;
   END IF;
 
@@ -100,7 +102,7 @@ BEGIN
   IF v_boy_ready AND v_girl_ready THEN
     IF v_boy_clicked_at IS NOT NULL AND v_girl_clicked_at IS NOT NULL
        AND ABS(EXTRACT(EPOCH FROM (v_boy_clicked_at - v_girl_clicked_at))) <= 10 THEN
-      -- Both ready within window → CUT!
+      -- Both ready within window -> CUT!
       UPDATE public.cake_session
       SET boy_ready = true, girl_ready = true,
           boy_clicked_at = v_boy_clicked_at, girl_clicked_at = v_girl_clicked_at,
@@ -133,8 +135,8 @@ BEGIN
 
   -- Return updated state
   SELECT row_to_json(t) INTO result
-  FROM (SELECT boy_ready, girl_ready, cake_cut, boy_clicked_at, girl_clicked_at, cut_at, updated_at
-        FROM public.cake_session WHERE session_name = 'main_birthday_cake') t;
+  FROM (SELECT cs.boy_ready, cs.girl_ready, cs.cake_cut, cs.boy_clicked_at, cs.girl_clicked_at, cs.cut_at, cs.updated_at
+        FROM public.cake_session cs WHERE cs.session_name = 'main_birthday_cake') t;
   RETURN result;
 END;
 $$;
