@@ -12,9 +12,9 @@ export interface CakeSession {
 
 const STORAGE_KEY = 'cake_session';
 const CHANNEL_NAME = 'cake-session';
-const SESSION_KEY = 'birthday_2026_main';
-const PRESENCE_CHANNEL_KEY = `presence:cake_session:${SESSION_KEY}`;
-const EXPIRY_WINDOW_MS = 3000; // 3-second window
+const SESSION_NAME = 'main_birthday_cake';
+const PRESENCE_CHANNEL_KEY = `presence:cake_session:${SESSION_NAME}`;
+const EXPIRY_WINDOW_MS = 10000; // 10-second window
 
 const DEFAULT_SESSION: CakeSession = {
   boy_ready: false,
@@ -60,18 +60,25 @@ export function getLocalCakeSession(): CakeSession {
 export async function getCakeSession(): Promise<CakeSession> {
   const local = getLocalCakeSession();
   try {
+    console.log('[CakeRT] Fetching cake session from Supabase...');
     const { data, error } = await supabase
       .from('cake_session')
       .select('*')
-      .eq('session_key', SESSION_KEY)
+      .eq('session_name', SESSION_NAME)
       .maybeSingle();
 
-    if (error || !data) {
-      // If table doesn't exist or other error, fallback to local
+    if (error) {
+      console.error('[CakeRT] Supabase SELECT error:', error.message, error.details, error.hint);
       return local;
     }
 
-    const session = {
+    if (!data) {
+      console.warn('[CakeRT] No row found for session_name =', SESSION_NAME, '— using local fallback');
+      return local;
+    }
+
+    console.log('[CakeRT] Fetched session from Supabase:', data);
+    const session: CakeSession = {
       boy_ready: data.boy_ready,
       girl_ready: data.girl_ready,
       cake_cut: data.cake_cut,
@@ -81,7 +88,8 @@ export async function getCakeSession(): Promise<CakeSession> {
     };
     saveLocalSession(session);
     return session;
-  } catch {
+  } catch (err) {
+    console.error('[CakeRT] getCakeSession exception:', err);
     return local;
   }
 }
@@ -102,73 +110,7 @@ function broadcastLocalSession(session: CakeSession): void {
   }
 }
 
-// Update ready status in Supabase and locally
-export async function updateCakeReady(role: 'boy' | 'girl'): Promise<CakeSession> {
-  const now = new Date().toISOString();
-  let session = await getCakeSession();
-
-  if (role === 'boy') {
-    session.boy_ready = true;
-    session.boy_clicked_at = session.boy_clicked_at ?? now;
-  } else {
-    session.girl_ready = true;
-    session.girl_clicked_at = session.girl_clicked_at ?? now;
-  }
-
-  if (session.boy_ready && session.girl_ready && !session.cake_cut) {
-    session.cake_cut = true;
-    session.cut_at = now;
-  }
-
-  // Update local state first
-  saveLocalSession(session);
-  broadcastLocalSession(session);
-
-  // Try updating Supabase
-  try {
-    // Check if session exists in Supabase first
-    const { data: existing } = await supabase
-      .from('cake_session')
-      .select('id')
-      .eq('session_key', SESSION_KEY)
-      .maybeSingle();
-
-    if (existing) {
-      await supabase
-        .from('cake_session')
-        .update({
-          boy_ready: session.boy_ready,
-          girl_ready: session.girl_ready,
-          cake_cut: session.cake_cut,
-          boy_clicked_at: session.boy_clicked_at,
-          girl_clicked_at: session.girl_clicked_at,
-          cut_at: session.cut_at,
-          updated_at: now
-        })
-        .eq('session_key', SESSION_KEY);
-    } else {
-      // Create it
-      await supabase
-        .from('cake_session')
-        .insert({
-          session_key: SESSION_KEY,
-          boy_ready: session.boy_ready,
-          girl_ready: session.girl_ready,
-          cake_cut: session.cake_cut,
-          boy_clicked_at: session.boy_clicked_at,
-          girl_clicked_at: session.girl_clicked_at,
-          cut_at: session.cut_at,
-          updated_at: now
-        });
-    }
-  } catch (err) {
-    console.warn("Supabase update failed, relying on local sync:", err);
-  }
-
-  return session;
-}
-
-// Subscribe to session updates
+// Subscribe to session updates via Supabase Realtime + local BroadcastChannel
 export function subscribeToCakeSession(
   callback: (session: CakeSession) => void,
 ): () => void {
@@ -176,7 +118,7 @@ export function subscribeToCakeSession(
     return () => {};
   }
 
-  // Set up local storage listeners
+  // Set up local storage listeners for same-device tab sync
   const channel = getChannel();
   const handleMessage = (event: MessageEvent) => {
     if (event.data?.type === 'cake_session_update' && event.data.session) {
@@ -202,18 +144,20 @@ export function subscribeToCakeSession(
   }
   window.addEventListener('storage', handleStorage);
 
-  // Set up Supabase Realtime subscription
+  // Set up Supabase Realtime subscription for cross-device sync
+  console.log('[CakeRT] Setting up Supabase Realtime subscription for cake_session...');
   const supabaseChannel = supabase
-    .channel('public:cake_session')
+    .channel('realtime:cake_session_updates')
     .on(
       'postgres_changes',
       {
         event: '*',
         schema: 'public',
         table: 'cake_session',
-        filter: `session_key=eq.${SESSION_KEY}`
+        filter: `session_name=eq.${SESSION_NAME}`
       },
       (payload) => {
+        console.log('[CakeRT] Realtime payload received:', payload);
         if (payload.new) {
           const data = payload.new as Record<string, unknown>;
           const session: CakeSession = {
@@ -224,14 +168,18 @@ export function subscribeToCakeSession(
             girl_clicked_at: data.girl_clicked_at as string | null,
             cut_at: data.cut_at as string | null,
           };
+          console.log('[CakeRT] Realtime session update:', session);
           saveLocalSession(session);
           callback(session);
         }
       }
     )
-    .subscribe();
+    .subscribe((status) => {
+      console.log('[CakeRT] Realtime subscription status:', status);
+    });
 
   return () => {
+    console.log('[CakeRT] Cleaning up subscriptions');
     if (channel) {
       channel.removeEventListener('message', handleMessage);
       channel.close();
@@ -247,7 +195,7 @@ export async function resetCakeSession(): Promise<void> {
   broadcastLocalSession(session);
 
   try {
-    await supabase
+    const { error } = await supabase
       .from('cake_session')
       .update({
         boy_ready: false,
@@ -258,14 +206,18 @@ export async function resetCakeSession(): Promise<void> {
         cut_at: null,
         updated_at: new Date().toISOString()
       })
-      .eq('session_key', SESSION_KEY);
+      .eq('session_name', SESSION_NAME);
+
+    if (error) {
+      console.error('[CakeRT] resetCakeSession error:', error.message);
+    }
   } catch (err) {
-    console.warn("Supabase reset failed:", err);
+    console.warn('[CakeRT] Supabase reset failed:', err);
   }
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   NEW: Presence Layer + Validated Ready Logic (Layer A + B)
+   Presence Layer
    ═══════════════════════════════════════════════════════════════ */
 
 /**
@@ -278,6 +230,8 @@ export function joinCakePresence(
 ): () => void {
   if (typeof window === 'undefined') return () => {};
 
+  console.log('[CakePresence] Joining presence channel as:', role);
+
   const channel = supabase.channel(PRESENCE_CHANNEL_KEY, {
     config: { presence: { key: role } },
   });
@@ -287,38 +241,50 @@ export function joinCakePresence(
     const allKeys = Object.keys(state);
     const boyOnline = allKeys.includes('boy') && (state['boy'] as unknown[]).length > 0;
     const girlOnline = allKeys.includes('girl') && (state['girl'] as unknown[]).length > 0;
+    console.log('[CakePresence] Presence state derived:', { boyOnline, girlOnline, keys: allKeys, rawState: state });
     onPresenceChange({ boyOnline, girlOnline });
   };
 
   channel
     .on('presence', { event: 'sync' }, () => {
+      console.log('[CakePresence] Presence sync event');
       derivePresence();
     })
-    .on('presence', { event: 'join' }, () => {
+    .on('presence', { event: 'join' }, ({ key, newPresences }) => {
+      console.log('[CakePresence] Presence JOIN:', key, newPresences);
       derivePresence();
     })
-    .on('presence', { event: 'leave' }, () => {
+    .on('presence', { event: 'leave' }, ({ key, leftPresences }) => {
+      console.log('[CakePresence] Presence LEAVE:', key, leftPresences);
       derivePresence();
     })
     .subscribe(async (status) => {
+      console.log('[CakePresence] Channel subscribe status:', status);
       if (status === 'SUBSCRIBED') {
+        console.log('[CakePresence] Channel SUBSCRIBED — calling track() for role:', role);
         await channel.track({
           role,
           joined_at: new Date().toISOString(),
         });
+        console.log('[CakePresence] track() called successfully');
         derivePresence();
       }
     });
 
   return () => {
+    console.log('[CakePresence] Leaving presence channel, untracking role:', role);
     channel.untrack();
     supabase.removeChannel(channel);
   };
 }
 
+/* ═══════════════════════════════════════════════════════════════
+   Validated Ready Logic — uses RPC for atomic updates
+   ═══════════════════════════════════════════════════════════════ */
+
 /**
- * Enhanced ready update with presence + expiry validation.
- * Returns a result indicating what happened.
+ * Enhanced ready update using Supabase RPC for atomic server-side logic.
+ * Falls back to client-side upsert if RPC is unavailable.
  */
 export async function updateCakeReadyWithValidation(
   role: 'boy' | 'girl',
@@ -326,81 +292,92 @@ export async function updateCakeReadyWithValidation(
 ): Promise<{ result: ReadyResult; session: CakeSession }> {
   // Guard: both must be online
   if (!presence.boyOnline || !presence.girlOnline) {
+    console.log('[CakeRT] PRESENCE_BLOCKED — not both online:', presence);
     return { result: 'PRESENCE_BLOCKED', session: await getCakeSession() };
   }
 
-  const now = new Date().toISOString();
-  const nowMs = Date.now();
-  let session = await getCakeSession();
+  console.log('[CakeRT] Calling set_cake_ready RPC for role:', role);
 
-  // If cake already cut, no-op
+  try {
+    // Try RPC first (atomic, no race condition)
+    const { data, error } = await supabase.rpc('set_cake_ready', {
+      input_role: role,
+    });
+
+    if (error) {
+      console.error('[CakeRT] RPC set_cake_ready error:', error.message, error.details, error.hint);
+      // Fall back to client-side update
+      return await fallbackClientUpdate(role);
+    }
+
+    console.log('[CakeRT] RPC set_cake_ready response:', data);
+
+    const session: CakeSession = {
+      boy_ready: data.boy_ready,
+      girl_ready: data.girl_ready,
+      cake_cut: data.cake_cut,
+      boy_clicked_at: data.boy_clicked_at,
+      girl_clicked_at: data.girl_clicked_at,
+      cut_at: data.cut_at,
+    };
+
+    saveLocalSession(session);
+    broadcastLocalSession(session);
+
+    const result: ReadyResult = session.cake_cut ? 'CUT' : 'WAITING';
+    console.log('[CakeRT] RPC result:', result, session);
+    return { result, session };
+  } catch (err) {
+    console.error('[CakeRT] RPC exception, falling back to client update:', err);
+    return await fallbackClientUpdate(role);
+  }
+}
+
+/**
+ * Fallback client-side update if RPC is not available.
+ * Uses upsert to avoid check-then-insert race condition.
+ */
+async function fallbackClientUpdate(
+  role: 'boy' | 'girl',
+): Promise<{ result: ReadyResult; session: CakeSession }> {
+  console.warn('[CakeRT] Using fallback client-side update for role:', role);
+  const now = new Date().toISOString();
+  const session = await getCakeSession();
+
   if (session.cake_cut) {
     return { result: 'CUT', session };
   }
 
-  const otherRole = role === 'boy' ? 'girl' : 'boy';
-  const otherReady = otherRole === 'boy' ? session.boy_ready : session.girl_ready;
-  const otherClickedAt = otherRole === 'boy' ? session.boy_clicked_at : session.girl_clicked_at;
+  // Set our side ready
+  if (role === 'boy') {
+    session.boy_ready = true;
+    session.boy_clicked_at = now;
+  } else {
+    session.girl_ready = true;
+    session.girl_clicked_at = now;
+  }
 
-  if (otherReady && otherClickedAt) {
-    // Check if other side's click is still within the expiry window
-    const otherClickMs = new Date(otherClickedAt).getTime();
-    const elapsed = nowMs - otherClickMs;
-
-    if (elapsed <= EXPIRY_WINDOW_MS) {
-      // Both ready within window → CUT!
+  // Check if both ready within window
+  if (session.boy_ready && session.girl_ready) {
+    const boyMs = session.boy_clicked_at ? new Date(session.boy_clicked_at).getTime() : 0;
+    const girlMs = session.girl_clicked_at ? new Date(session.girl_clicked_at).getTime() : 0;
+    const diff = Math.abs(boyMs - girlMs);
+    if (diff <= EXPIRY_WINDOW_MS) {
       session.cake_cut = true;
       session.cut_at = now;
-      if (role === 'boy') {
-        session.boy_ready = true;
-        session.boy_clicked_at = now;
-      } else {
-        session.girl_ready = true;
-        session.girl_clicked_at = now;
-      }
-
-      await persistSession(session);
-      return { result: 'CUT', session };
-    } else {
-      // Other side's click expired — reset them, set ourselves fresh
-      if (otherRole === 'boy') {
-        session.boy_ready = false;
-        session.boy_clicked_at = null;
-      } else {
-        session.girl_ready = false;
-        session.girl_clicked_at = null;
-      }
-      if (role === 'boy') {
-        session.boy_ready = true;
-        session.boy_clicked_at = now;
-      } else {
-        session.girl_ready = true;
-        session.girl_clicked_at = now;
-      }
-
-      await persistSession(session);
-      return { result: 'WAITING', session };
     }
-  } else {
-    // Other side not ready yet — set our side
-    if (role === 'boy') {
-      session.boy_ready = true;
-      session.boy_clicked_at = now;
-    } else {
-      session.girl_ready = true;
-      session.girl_clicked_at = now;
-    }
-
-    await persistSession(session);
-    return { result: 'WAITING', session };
   }
+
+  await persistSession(session);
+  return { result: session.cake_cut ? 'CUT' : 'WAITING', session };
 }
 
 /**
  * Reset an expired ready flag (one side only).
  */
 export async function resetExpiredReady(role: 'boy' | 'girl'): Promise<CakeSession> {
-  let session = await getCakeSession();
+  console.log('[CakeRT] Resetting expired ready for role:', role);
+  const session = await getCakeSession();
 
   if (role === 'boy') {
     session.boy_ready = false;
@@ -418,52 +395,43 @@ export async function resetExpiredReady(role: 'boy' | 'girl'): Promise<CakeSessi
  * Reset both sides when someone drops presence mid-window.
  */
 export async function resetBothOnPresenceDrop(): Promise<CakeSession> {
+  console.log('[CakeRT] Resetting both sides due to presence drop');
   const session: CakeSession = { ...DEFAULT_SESSION };
   await persistSession(session);
   return session;
 }
 
-/** Internal helper to persist session to local + broadcast + Supabase */
+/** Internal helper to persist session to local + broadcast + Supabase using upsert */
 async function persistSession(session: CakeSession): Promise<void> {
   const now = new Date().toISOString();
   saveLocalSession(session);
   broadcastLocalSession(session);
 
   try {
-    const { data: existing } = await supabase
+    const { error } = await supabase
       .from('cake_session')
-      .select('id')
-      .eq('session_key', SESSION_KEY)
-      .maybeSingle();
+      .upsert(
+        {
+          session_name: SESSION_NAME,
+          boy_ready: session.boy_ready,
+          girl_ready: session.girl_ready,
+          cake_cut: session.cake_cut,
+          boy_clicked_at: session.boy_clicked_at,
+          girl_clicked_at: session.girl_clicked_at,
+          cut_at: session.cut_at,
+          updated_at: now,
+        },
+        { onConflict: 'session_name' }
+      );
 
-    if (existing) {
-      await supabase
-        .from('cake_session')
-        .update({
-          boy_ready: session.boy_ready,
-          girl_ready: session.girl_ready,
-          cake_cut: session.cake_cut,
-          boy_clicked_at: session.boy_clicked_at,
-          girl_clicked_at: session.girl_clicked_at,
-          cut_at: session.cut_at,
-          updated_at: now,
-        })
-        .eq('session_key', SESSION_KEY);
+    if (error) {
+      console.error('[CakeRT] Supabase upsert error:', error.message, error.details, error.hint);
     } else {
-      await supabase
-        .from('cake_session')
-        .insert({
-          session_key: SESSION_KEY,
-          boy_ready: session.boy_ready,
-          girl_ready: session.girl_ready,
-          cake_cut: session.cake_cut,
-          boy_clicked_at: session.boy_clicked_at,
-          girl_clicked_at: session.girl_clicked_at,
-          cut_at: session.cut_at,
-          updated_at: now,
-        });
+      console.log('[CakeRT] Session persisted to Supabase successfully');
     }
   } catch (err) {
-    console.warn('Supabase persist failed, relying on local sync:', err);
+    console.warn('[CakeRT] Supabase persist failed, relying on local sync:', err);
   }
 }
+
+export { EXPIRY_WINDOW_MS };

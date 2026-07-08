@@ -10,6 +10,7 @@ import {
   updateCakeReadyWithValidation,
   resetExpiredReady,
   resetBothOnPresenceDrop,
+  EXPIRY_WINDOW_MS,
   type CakeSession,
 } from '@/lib/cakeRealtime';
 import type { CameraState, PresenceState, ToastVariant } from '@/lib/cakeSessionTypes';
@@ -36,8 +37,6 @@ const DEFAULT_SESSION: CakeSession = {
   cut_at: null,
 };
 
-const EXPIRY_WINDOW_MS = 3000;
-
 /* ── Loading shimmer for the 3D scene ── */
 function CakeSceneLoader() {
   return (
@@ -57,6 +56,54 @@ function CakeSceneLoader() {
   );
 }
 
+/* ── Debug Card (dev only) ── */
+function DebugCard({
+  role,
+  presence,
+  session,
+  presenceStatus,
+  realtimeStatus,
+}: {
+  role: string | null;
+  presence: PresenceState;
+  session: CakeSession;
+  presenceStatus: string;
+  realtimeStatus: string;
+}) {
+  if (process.env.NODE_ENV !== 'development') return null;
+
+  return (
+    <div
+      className="fixed top-2 left-1/2 -translate-x-1/2 z-[100] w-[320px] rounded-2xl p-3 text-[10px] font-mono leading-relaxed border border-white/60 shadow-lg"
+      style={{
+        backdropFilter: 'blur(18px)',
+        WebkitBackdropFilter: 'blur(18px)',
+        backgroundColor: 'rgba(255,255,255,0.75)',
+      }}
+    >
+      <div className="font-bold text-[11px] text-[#5B3A5D] mb-1">🛠 Debug Panel</div>
+      <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[#5B3A5D]/80">
+        <span>Role:</span>
+        <span className="font-bold">{role ?? 'null'}</span>
+        <span>Boy Online:</span>
+        <span className={presence.boyOnline ? 'text-green-600 font-bold' : 'text-red-500'}>{String(presence.boyOnline)}</span>
+        <span>Girl Online:</span>
+        <span className={presence.girlOnline ? 'text-green-600 font-bold' : 'text-red-500'}>{String(presence.girlOnline)}</span>
+        <span>Boy Ready:</span>
+        <span className={session.boy_ready ? 'text-amber-600 font-bold' : ''}>{String(session.boy_ready)}</span>
+        <span>Girl Ready:</span>
+        <span className={session.girl_ready ? 'text-amber-600 font-bold' : ''}>{String(session.girl_ready)}</span>
+        <span>Cake Cut:</span>
+        <span className={session.cake_cut ? 'text-pink-600 font-bold' : ''}>{String(session.cake_cut)}</span>
+        <span>Presence:</span>
+        <span className="font-bold">{presenceStatus}</span>
+        <span>Realtime:</span>
+        <span className="font-bold">{realtimeStatus}</span>
+      </div>
+    </div>
+  );
+}
+
 /* ═══════════════════════════════════════════════
    Custom hook: useCakeSession
    Manages session, presence, camera state, expiry
@@ -67,6 +114,8 @@ function useCakeSession(role: 'boy' | 'girl' | null) {
   const [cameraState, setCameraState] = useState<CameraState>('entry');
   const [toastVariant, setToastVariant] = useState<ToastVariant>('none');
   const [loaded, setLoaded] = useState(false);
+  const [presenceStatus, setPresenceStatus] = useState('disconnected');
+  const [realtimeStatus, setRealtimeStatus] = useState('disconnected');
 
   const expiryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const entryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -75,7 +124,9 @@ function useCakeSession(role: 'boy' | 'girl' | null) {
   // Load initial session
   useEffect(() => {
     const load = async () => {
+      console.log('[LiveCake] Loading initial cake session...');
       const initial = await getCakeSession();
+      console.log('[LiveCake] Initial session loaded:', initial);
       setSession(initial);
       setLoaded(true);
     };
@@ -84,19 +135,37 @@ function useCakeSession(role: 'boy' | 'girl' | null) {
 
   // Subscribe to DB changes
   useEffect(() => {
+    console.log('[LiveCake] Setting up realtime subscription...');
+    setRealtimeStatus('connecting');
     const unsubscribe = subscribeToCakeSession((updated) => {
+      console.log('[LiveCake] Realtime session update received:', updated);
+      setRealtimeStatus('connected');
       setSession(updated);
     });
-    return unsubscribe;
+    setRealtimeStatus('connected');
+    return () => {
+      setRealtimeStatus('disconnected');
+      unsubscribe();
+    };
   }, []);
 
   // Join presence channel
   useEffect(() => {
-    if (!role) return;
+    if (!role) {
+      console.log('[LiveCake] No role set, skipping presence');
+      return;
+    }
+    console.log('[LiveCake] Joining presence as role:', role);
+    setPresenceStatus('connecting');
     const leave = joinCakePresence(role, (p) => {
+      console.log('[LiveCake] Presence update:', p);
+      setPresenceStatus('connected');
       setPresence(p);
     });
-    return leave;
+    return () => {
+      setPresenceStatus('disconnected');
+      leave();
+    };
   }, [role]);
 
   // Camera state entry → idle after 2s
@@ -143,7 +212,7 @@ function useCakeSession(role: 'boy' | 'girl' | null) {
     }
   }, [session, loaded, cameraState]);
 
-  // 3-second expiry timer when one side is ready
+  // 10-second expiry timer when one side is ready
   useEffect(() => {
     if (expiryTimerRef.current) {
       clearTimeout(expiryTimerRef.current);
@@ -166,7 +235,10 @@ function useCakeSession(role: 'boy' | 'girl' | null) {
       const clickMs = clickedAt ? new Date(clickedAt).getTime() : Date.now();
       const remaining = Math.max(0, EXPIRY_WINDOW_MS - (Date.now() - clickMs));
 
+      console.log('[LiveCake] Starting expiry timer:', { readyRole, remaining: remaining + 500 });
+
       expiryTimerRef.current = setTimeout(async () => {
+        console.log('[LiveCake] Expiry timer fired for role:', readyRole);
         // Expire the ready flag
         const updated = await resetExpiredReady(readyRole as 'boy' | 'girl');
         setSession(updated);
@@ -192,6 +264,7 @@ function useCakeSession(role: 'boy' | 'girl' | null) {
       const girlDropped = prev.girlOnline && !presence.girlOnline;
 
       if (boyDropped || girlDropped) {
+        console.log('[LiveCake] Presence drop detected:', { boyDropped, girlDropped });
         // Reset both sides
         setToastVariant('stepped_away');
         resetBothOnPresenceDrop().then((updated) => {
@@ -207,9 +280,14 @@ function useCakeSession(role: 'boy' | 'girl' | null) {
 
   // Handle cut button click
   const handleCutClick = useCallback(async () => {
-    if (!role) return;
+    if (!role) {
+      console.warn('[LiveCake] handleCutClick called with no role');
+      return;
+    }
 
+    console.log('[LiveCake] Cut button clicked by role:', role);
     const { result, session: updated } = await updateCakeReadyWithValidation(role, presence);
+    console.log('[LiveCake] Cut click result:', result, updated);
     setSession(updated);
 
     if (result === 'PRESENCE_BLOCKED') {
@@ -254,6 +332,8 @@ function useCakeSession(role: 'boy' | 'girl' | null) {
     girlTeddyState: getGirlTeddyState(),
     readySide,
     loaded,
+    presenceStatus,
+    realtimeStatus,
   };
 }
 
@@ -262,6 +342,11 @@ function useCakeSession(role: 'boy' | 'girl' | null) {
    ═══════════════════════════════════════════════ */
 export default function LiveCakeCut() {
   const { role, setActiveSection } = useApp();
+
+  // Log current role
+  useEffect(() => {
+    console.log('[LiveCake] Current cake user role:', role);
+  }, [role]);
 
   const {
     session,
@@ -274,6 +359,8 @@ export default function LiveCakeCut() {
     boyTeddyState,
     girlTeddyState,
     readySide,
+    presenceStatus,
+    realtimeStatus,
   } = useCakeSession(role);
 
   const handleContinue = () => {
@@ -287,6 +374,15 @@ export default function LiveCakeCut() {
         background: 'linear-gradient(180deg, #FFF3F8 0%, #F1E9FF 40%, #FFF3F8 80%, #FFE3A3 100%)',
       }}
     >
+      {/* Debug Card (dev only) */}
+      <DebugCard
+        role={role}
+        presence={presence}
+        session={session}
+        presenceStatus={presenceStatus}
+        realtimeStatus={realtimeStatus}
+      />
+
       {/* 3D Canvas Layer */}
       <div className="absolute inset-0 z-0" style={{ bottom: '4rem' }}>
         <CakeScene
